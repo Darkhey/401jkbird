@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>Retirement Bird — Powered by 401JK</title>
+  <style>
+    :root{ --gold:#ffd166; --ink:#fff; --panel:#13151a; --bg:#0b1220; }
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{margin:0;background:var(--bg);font-family:System-ui,-apple-system,Segoe UI,Roboto,Inter,Arial,sans-serif;color:var(--ink)}
+
+    header{padding:12px 16px;text-align:center}
+    header h1{margin:0;font-size:clamp(18px,4vw,24px)}
+
+    .wrap{width:100%;max-width:min(92vw,720px);margin:0 auto;padding:0 12px 16px}
+
+    /* Game area */
+    #game{position:relative;width:100%;aspect-ratio:9/16;background:#101622;border:3px solid var(--gold);border-radius:16px;overflow:hidden;box-shadow:0 10px 30px rgba(0,0,0,.45)}
+    canvas{width:100%;height:100%;display:block;background:#000}
+
+    /* HUD */
+    .hud{position:absolute;top:8px;left:0;right:0;z-index:2;display:flex;gap:8px;justify-content:center;font-weight:800;font-size:clamp(12px,3.2vw,14px);text-shadow:0 1px 0 #000}
+    .pill{padding:6px 10px;border-radius:999px;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.15)}
+
+    /* Floating promo */
+    .promo{position:absolute;bottom:10px;left:50%;transform:translateX(-50%);background:var(--gold);color:#111;padding:6px 12px;border-radius:999px;font-size:clamp(12px,3.2vw,13px);font-weight:900;cursor:pointer;z-index:2}
+
+    /* Controls (kept simple) */
+    .controls{margin:10px 0 0;display:grid;grid-template-columns:1fr 1fr;gap:8px}
+    .btn{appearance:none;border:none;cursor:pointer;padding:10px 14px;border-radius:12px;font-weight:800;font-size:clamp(14px,3.8vw,16px)}
+    .btn.primary{background:var(--gold);color:#111}
+    .btn.ghost{background:#1f2937;color:#e5e7eb;border:1px solid rgba(255,255,255,.12)}
+
+    /* Game Over overlay */
+    .overlay{position:absolute;inset:0;display:none;place-items:center;background:rgba(0,0,0,.55);z-index:3}
+    .overlay .card{background:var(--panel);border:2px solid var(--gold);border-radius:16px;padding:14px;width:min(92%,420px);box-shadow:0 12px 32px rgba(0,0,0,.55)}
+    .overlay h2{margin:6px 0 2px;font-size:clamp(18px,4.5vw,22px);color:var(--gold)}
+    .overlay p{margin:0 0 10px;font-size:clamp(13px,3.5vw,15px);opacity:.95}
+    .row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
+    .row .btn{width:100%}
+
+    @media (min-width:640px){.wrap{max-width:520px}}
+    @media (min-width:900px){.wrap{max-width:620px}}
+  </style>
+</head>
+<body>
+  <header class="wrap">
+    <h1><img src="https://401jk.fun/logo.png" alt="401JK Logo" style="height:1.4em;vertical-align:middle"> Retirement Bird · 401JK Meme Edition</h1>
+  </header>
+  <main class="wrap">
+    <section id="game">
+      <canvas id="c"></canvas>
+
+      <!-- Game Over Overlay -->
+      <div id="over" class="overlay" aria-hidden="true">
+        <div class="card" role="dialog" aria-modal="true" aria-labelledby="overTitle">
+          <img id="overChar" alt="401JK Character" src="https://401jk.fun/img/char.png" style="width:100%;max-height:140px;object-fit:contain;border-radius:10px;display:block;margin:0 auto 6px">
+          <h2 id="overTitle">Game Over</h2>
+          <p>Score <span id="overScore">0</span> · Best <span id="overBest">0</span></p>
+          <div class="row">
+            <a id="xShare" class="btn primary" href="#" target="_blank" rel="noopener">Share on X</a>
+            <a id="tgShare" class="btn primary" href="#" target="_blank" rel="noopener">Telegram</a>
+          </div>
+          <div class="row">
+            <a id="overCta" class="btn primary" href="#" target="_blank" rel="noopener">Buy 401JK</a>
+            <button id="retryBtn" class="btn ghost">Retry</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="hud">
+        <div class="pill">Score: <span id="score">0</span></div>
+        <div class="pill">Best: <span id="best">0</span></div>
+      </div>
+      <div id="promo" class="promo">💸 Meme your retirement → 401JK</div>
+    </section>
+
+    <div class="controls">
+      <button id="shareBtn" class="btn ghost">Share</button>
+      <a id="ctaBtn" class="btn primary" href="#" target="_blank" rel="noopener">Buy 401JK</a>
+    </div>
+
+    <p style="opacity:.9;font-size:clamp(12px,3.2vw,14px);margin:10px 0 0">Tap / Click to flap. Dodge Fees, collect $401JK. <br><img src="https://401jk.fun/meme.png" alt="401JK Meme" style="max-width:100%;border-radius:12px;margin-top:8px"></p>
+  </main>
+
+<script>
+'use strict';
+(function(){
+  // DOM refs
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const scoreEl = document.getElementById('score');
+  const bestEl = document.getElementById('best');
+  const ctaBtn = document.getElementById('ctaBtn');
+  const promo = document.getElementById('promo');
+  const shareBtn = document.getElementById('shareBtn');
+  const over = document.getElementById('over');
+  const overScore = document.getElementById('overScore');
+  const overBest = document.getElementById('overBest');
+  const retryBtn = document.getElementById('retryBtn');
+  const xShare = document.getElementById('xShare');
+  const tgShare = document.getElementById('tgShare');
+  const overCta = document.getElementById('overCta');
+
+  // Links
+  const PROMO_BASE = 'https://dexscreener.com/solana/Cz7LGKdZPpAxonXx23ZYPW3RtDQvjcf17ZDCZEzFpump';
+  const IMG_LOGO_SRC = 'https://401jk.fun/img/logo.png';
+  const IMG_WALL_SRC = 'https://401jk.fun/img/wall.png';
+  const imgLogo = new Image(); imgLogo.src = IMG_LOGO_SRC;
+  const imgWall = new Image(); imgWall.src = IMG_WALL_SRC;
+
+  // Dimensions and physics (responsive)
+  let W=0, H=0, DPR=1; let CSSW=0, CSSH=0; const DRAG=2.5; // air resistance
+  let gravity=1500, flapImpulse=-560, scroll=160;
+  let pipeGap=0, pipeW=0, spawnDist=0;
+
+  // State
+  let bird, pipes, score, best = +localStorage.getItem('best401') || 0, state;
+  let lastT = 0;
+
+  function fit(){
+    DPR = Math.min(2, window.devicePixelRatio || 1);
+    const rect = canvas.getBoundingClientRect();
+    CSSW = Math.max(200, rect.width);
+    CSSH = Math.max(200, rect.height);
+    W = Math.floor(CSSW * DPR);
+    H = Math.floor(CSSH * DPR);
+    canvas.width = W; canvas.height = H; ctx.setTransform(DPR,0,0,DPR,0,0);
+
+    // Metrics derived from CSS pixels
+    pipeGap   = Math.round(CSSH * 0.38);
+    pipeW     = Math.round(CSSW * 0.16);
+    spawnDist = Math.round(CSSW * 0.55);
+
+    // Base physics in CSS px/sec and px/sec^2
+    let g = 2.0 * CSSH;       // gravity
+    let flap = -0.70 * CSSH;  // upward impulse
+    let scr = 0.30 * CSSW;    // horizontal speed
+    if(CSSH < 520){ flap = -0.60 * CSSH; g = 1.9 * CSSH; scr = 0.28 * CSSW; }
+    if(CSSH < 420){ flap = -0.55 * CSSH; g = 1.85 * CSSH; scr = 0.26 * CSSW; }
+
+    gravity = g; flapImpulse = flap; scroll = scr;
+
+    if(bird){ bird.r = Math.max(10, Math.round(CSSW * 0.04)); }
+  }
+  // Observe resize AFTER fit is defined; no stray braces here
+  new ResizeObserver(fit).observe(canvas);
+
+  function reset(){
+    score = 0; state = 'ready'; pipes = []; lastT = 0; over.style.display = 'none';
+    bird = { x: Math.round(CSSW*0.22), y: Math.round(CSSH*0.5), vy: 0, r: Math.max(10, Math.round(CSSW*0.04)) };
+  }
+
+  function flapBird(){ if(state==='ready') state='play'; if(state==='play') bird.vy = flapImpulse; }
+
+  // Input: tap/click only (per user preference)
+  canvas.addEventListener('pointerdown', flapBird, {passive:true});
+
+  // External links
+  ctaBtn.onclick = () => window.open(PROMO_BASE, '_blank');
+  promo.onclick = () => window.open(PROMO_BASE, '_blank');
+  shareBtn.onclick = () => {
+    const quips = [
+      `I retired a bird before my portfolio. ${PROMO_BASE} #401JK`,
+      `Just scored ${score} in Retirement Bird. Financial advice: flap early, sell never. ${PROMO_BASE} #401JK`,
+      `My pension is a meme and my bird can fly. Score ${score}. ${PROMO_BASE} #401JK`
+    ];
+    const text = quips[Math.floor(Math.random()*quips.length)];
+    const tweet = `https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}&url=${encodeURIComponent(PROMO_BASE)}`;
+    const telegram = `https://t.me/share/url?url=${encodeURIComponent(PROMO_BASE)}&text=${encodeURIComponent(text)}`;
+    const xFirst = /iphone|android|mobile/i.test(navigator.userAgent);
+    window.open(xFirst ? tweet : telegram, '_blank');
+  };
+
+  function addPipe(){
+    const top = Math.random() * (CSSH * 0.45) + CSSH * 0.15; // playable band
+    const gap = Math.max(pipeGap*0.85, pipeGap - Math.max(0, score)*3); // gentle ramp
+    pipes.push({ x: canvas.clientWidth, y: top, gap, scored: false });
+  }
+
+  function update(dt){
+    if(state !== 'play') return;
+
+    bird.vy += gravity * dt;            // accelerate
+    bird.vy += -DRAG * bird.vy * dt;    // dampen bounce
+    if(bird.vy < -CSSH) bird.vy = -CSSH; // clamp upward
+    bird.y  += bird.vy * dt;            // integrate
+
+    if(bird.y - bird.r < 0 || bird.y + bird.r > CSSH) return gameover();
+
+    if(pipes.length === 0 || pipes[pipes.length-1].x < canvas.clientWidth - spawnDist) addPipe();
+
+    for(const p of pipes){ p.x -= scroll * dt; }
+    pipes = pipes.filter(p => p.x + pipeW > 0);
+
+    for(const p of pipes){
+      if(!p.scored && p.x + pipeW < bird.x){ score++; p.scored = true; }
+      const inX = bird.x + bird.r > p.x && bird.x - bird.r < p.x + pipeW;
+      const hitTop = bird.y - bird.r < p.y;
+      const hitBottom = bird.y + bird.r > p.y + p.gap;
+      if(inX && (hitTop || hitBottom)) return gameover();
+    }
+  }
+
+  function gameover(){
+    state = 'over';
+    best = Math.max(best, score); localStorage.setItem('best401', best);
+    overScore.textContent = String(score); overBest.textContent = String(best);
+    const quips = [
+      `I retired a bird before my portfolio. #401JK`,
+      `Just scored ${score} in Retirement Bird. Financial advice: flap early, sell never. #401JK`,
+      `My pension is a meme and my bird can fly. Score ${score}. #401JK`
+    ];
+    const text = quips[Math.floor(Math.random()*quips.length)];
+    xShare.href = `https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}&url=${encodeURIComponent(PROMO_BASE)}`;
+    tgShare.href = `https://t.me/share/url?url=${encodeURIComponent(PROMO_BASE)}&text=${encodeURIComponent(text)}`;
+    overCta.href = PROMO_BASE;
+    over.style.display = 'grid';
+  }
+
+  function draw(){
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    const g = ctx.createLinearGradient(0,0,0,h);
+    g.addColorStop(0,'#0d274a'); g.addColorStop(1,'#082235');
+    ctx.fillStyle = g; ctx.fillRect(0,0,w,h);
+
+    if(imgWall && imgWall.complete && imgWall.naturalWidth){
+      const tile = Math.max(96, Math.floor(w*0.18));
+      ctx.save(); ctx.globalAlpha = 0.08;
+      for(let y=-tile; y<h+tile; y+=tile){
+        for(let x=-tile; x<w+tile; x+=tile){ ctx.drawImage(imgWall, x, y, tile, tile); }
+      }
+      ctx.restore();
+    }
+
+    const topGrad = ctx.createLinearGradient(0,0,0,Math.max(40,h*0.2));
+    topGrad.addColorStop(0,'#ef476f'); topGrad.addColorStop(1,'#9d2a46');
+    const bottomGrad = ctx.createLinearGradient(0,h*0.6,0,h);
+    bottomGrad.addColorStop(0,'#06d6a0'); bottomGrad.addColorStop(1,'#056e58');
+
+    for(const p of pipes){
+      ctx.fillStyle = topGrad; ctx.fillRect(p.x, 0, pipeW, p.y);
+      ctx.fillStyle = bottomGrad; ctx.fillRect(p.x, p.y + p.gap, pipeW, h - (p.y + p.gap));
+      ctx.save(); ctx.fillStyle='rgba(255,255,255,.85)'; ctx.font='bold 10px system-ui, sans-serif'; ctx.textAlign='center';
+      ctx.translate(p.x + pipeW/2, p.y/2); ctx.rotate(-Math.PI/2); ctx.fillText('FEES', 0, 0); ctx.restore();
+    }
+
+    ctx.fillStyle = '#ffd166'; // use hex, canvas can't resolve CSS var in JS
+    ctx.beginPath(); ctx.arc(bird.x, bird.y, bird.r, 0, Math.PI*2); ctx.fill();
+
+    scoreEl.textContent = String(score); bestEl.textContent = String(best);
+
+    if(imgLogo && imgLogo.complete && imgLogo.naturalWidth && w>360){
+      const lw = Math.min(140, Math.floor(w*0.35));
+      const lh = Math.floor(lw * (imgLogo.naturalHeight / imgLogo.naturalWidth));
+      ctx.save(); ctx.globalAlpha=0.12; ctx.drawImage(imgLogo, 8, 8, lw, lh); ctx.restore();
+    }
+
+    if(state==='ready'){
+      ctx.fillStyle='#fff'; ctx.font='bold 16px system-ui, sans-serif';
+      ctx.fillText('Tap to Start', w*0.35, h*0.46);
+    }
+  }
+
+  function loop(t){
+    if(!lastT) lastT = t;
+    const dt = Math.min(0.033, (t - lastT) / 1000);
+    lastT = t;
+    update(dt); draw(); requestAnimationFrame(loop);
+  }
+
+  retryBtn.addEventListener('click', () => { reset(); });
+
+  // Init
+  fit(); reset(); requestAnimationFrame(loop);
+
+  // -------------------------
+  // Runtime tests (console)
+  // -------------------------
+  (function runTests(){
+    try{
+      fit(); console.assert(CSSW>0 && CSSH>0, 'fit -> CSS dims > 0');
+      reset(); console.assert(state==='ready','reset -> state=ready');
+      pipes=[]; addPipe(); console.assert(pipes.length===1,'addPipe -> one pipe');
+      console.assert(typeof pipes[0].gap==='number' && pipes[0].gap>0,'pipe has gap');
+      const absFlap = Math.abs(flapImpulse); console.assert(absFlap < CSSH*0.8 && absFlap > CSSH*0.15, 'flapImpulse sane');
+      const y0 = bird.y; flapBird(); update(0.2); const dy = Math.abs(bird.y - y0); console.assert(dy < CSSH*0.25, 'rise < 25% height over 200ms');
+      score=3; gameover(); console.assert(xShare.href.includes('twitter.com/intent'),'xShare link built'); console.assert(tgShare.href.includes('t.me/share/url'),'tgShare link built');
+      reset(); console.assert(getComputedStyle(over).display==='none','overlay hidden after reset');
+      console.log('%cSelf-tests passed','color:#ffd166');
+    }catch(e){ console.error('self-tests failed', e); }
+  })();
+})();
+</script>
+</body>
+</html>
