@@ -37,6 +37,7 @@
     .overlay .card{background:var(--panel);border:2px solid var(--gold);border-radius:16px;padding:14px;width:min(92%,420px);box-shadow:0 12px 32px rgba(0,0,0,.55)}
     .overlay h2{margin:6px 0 2px;font-size:clamp(18px,4.5vw,22px);color:var(--gold)}
     .overlay p{margin:0 0 10px;font-size:clamp(13px,3.5vw,15px);opacity:.95}
+    .overlay p.statsLine{display:flex;flex-wrap:wrap;gap:6px;align-items:center;justify-content:center;text-align:center}
     .row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
     .row .btn{width:100%}
 
@@ -44,7 +45,7 @@
     @media (min-width:900px){.wrap{max-width:620px}}
   </style>
 </head>
-<body>
+<body data-rb-authenticated="false" data-rb-stats-url="" data-rb-auth-token="" data-rb-user-id="">
   <header class="wrap">
     <h1><img src="https://401jk.fun/logo.png" alt="401JK Logo" style="height:1.4em;vertical-align:middle"> Retirement Bird · 401JK Meme Edition</h1>
   </header>
@@ -57,7 +58,7 @@
         <div class="card" role="dialog" aria-modal="true" aria-labelledby="overTitle">
           <img id="overChar" alt="401JK Character" src="https://401jk.fun/img/char.png" style="width:100%;max-height:140px;object-fit:contain;border-radius:10px;display:block;margin:0 auto 6px">
           <h2 id="overTitle">Game Over</h2>
-          <p>Score <span id="overScore">0</span> · Best <span id="overBest">0</span></p>
+          <p class="statsLine">Score <span id="overScore">0</span> · Best <span id="overBest">0</span> · Games <span id="overGames">0</span></p>
           <div class="row">
             <a id="xShare" class="btn primary" href="#" target="_blank" rel="noopener">Share on X</a>
             <a id="tgShare" class="btn primary" href="#" target="_blank" rel="noopener">Telegram</a>
@@ -72,6 +73,7 @@
       <div class="hud">
         <div class="pill">Score: <span id="score">0</span></div>
         <div class="pill">Best: <span id="best">0</span></div>
+        <div class="pill">Games: <span id="games">0</span></div>
       </div>
       <div id="promo" class="promo">💸 Meme your retirement → 401JK</div>
     </section>
@@ -87,37 +89,63 @@
 <script>
 'use strict';
 (function(){
+  const runtimeConfig = getRuntimeConfig();
+  const PROMO_BASE = runtimeConfig.promoUrl;
+
   // DOM refs
   const canvas = document.getElementById('c');
   const ctx = canvas.getContext('2d');
   const scoreEl = document.getElementById('score');
   const bestEl = document.getElementById('best');
+  const gamesEl = document.getElementById('games');
   const ctaBtn = document.getElementById('ctaBtn');
   const promo = document.getElementById('promo');
   const shareBtn = document.getElementById('shareBtn');
   const over = document.getElementById('over');
   const overScore = document.getElementById('overScore');
   const overBest = document.getElementById('overBest');
+  const overGames = document.getElementById('overGames');
   const retryBtn = document.getElementById('retryBtn');
   const xShare = document.getElementById('xShare');
   const tgShare = document.getElementById('tgShare');
   const overCta = document.getElementById('overCta');
 
-  // Links
-  const PROMO_BASE = 'https://dexscreener.com/solana/Cz7LGKdZPpAxonXx23ZYPW3RtDQvjcf17ZDCZEzFpump';
+  const storage = initStorage();
+  const STORAGE_KEY = 'rb_stats_v1';
+  const LEGACY_KEY = 'best401';
+  const storedStats = readStoredStats();
+  let best = storedStats.best;
+  let games = storedStats.games;
+  let lastRoundScore = 0;
+
+  const statsBridge = createStatsBridge(runtimeConfig);
+
   const IMG_LOGO_SRC = 'https://401jk.fun/img/logo.png';
   const IMG_WALL_SRC = 'https://401jk.fun/img/wall.png';
   const imgLogo = new Image(); imgLogo.src = IMG_LOGO_SRC;
   const imgWall = new Image(); imgWall.src = IMG_WALL_SRC;
 
-  // Dimensions and physics (responsive)
-  let W=0, H=0, DPR=1; let CSSW=0, CSSH=0; const DRAG=2.5; // air resistance
+  let W=0, H=0, DPR=1; let CSSW=0, CSSH=0; const DRAG=2.5;
   let gravity=1500, flapImpulse=-560, scroll=160;
   let pipeGap=0, pipeW=0, spawnDist=0;
 
-  // State
-  let bird, pipes, score, best = +localStorage.getItem('best401') || 0, state;
+  let bird, pipes, score = 0, state = 'ready';
   let lastT = 0;
+
+  if(ctaBtn){ ctaBtn.href = PROMO_BASE; }
+  if(overCta){ overCta.href = PROMO_BASE; }
+
+  statsBridge.load().then(remote => {
+    if(!remote) return;
+    let changed = false;
+    if(remote.best > best){ best = remote.best; changed = true; }
+    if(remote.games > games){ games = remote.games; changed = true; }
+    if(changed){
+      persistStatsLocal({ best, games });
+      updateHud();
+      if(state === 'over') refreshOverlayStats();
+    }
+  });
 
   function fit(){
     DPR = Math.min(2, window.devicePixelRatio || 1);
@@ -128,15 +156,13 @@
     H = Math.floor(CSSH * DPR);
     canvas.width = W; canvas.height = H; ctx.setTransform(DPR,0,0,DPR,0,0);
 
-    // Metrics derived from CSS pixels
     pipeGap   = Math.round(CSSH * 0.38);
     pipeW     = Math.round(CSSW * 0.16);
     spawnDist = Math.round(CSSW * 0.55);
 
-    // Base physics in CSS px/sec and px/sec^2
-    let g = 2.0 * CSSH;       // gravity
-    let flap = -0.70 * CSSH;  // upward impulse
-    let scr = 0.30 * CSSW;    // horizontal speed
+    let g = 2.0 * CSSH;
+    let flap = -0.70 * CSSH;
+    let scr = 0.30 * CSSW;
     if(CSSH < 520){ flap = -0.60 * CSSH; g = 1.9 * CSSH; scr = 0.28 * CSSW; }
     if(CSSH < 420){ flap = -0.55 * CSSH; g = 1.85 * CSSH; scr = 0.26 * CSSW; }
 
@@ -144,48 +170,51 @@
 
     if(bird){ bird.r = Math.max(10, Math.round(CSSW * 0.04)); }
   }
-  // Observe resize AFTER fit is defined; no stray braces here
   new ResizeObserver(fit).observe(canvas);
 
   function reset(){
-    score = 0; state = 'ready'; pipes = []; lastT = 0; over.style.display = 'none';
+    score = 0;
+    lastRoundScore = 0;
+    state = 'ready';
+    pipes = [];
+    lastT = 0;
+    hideOverlay();
     bird = { x: Math.round(CSSW*0.22), y: Math.round(CSSH*0.5), vy: 0, r: Math.max(10, Math.round(CSSW*0.04)) };
+    updateHud();
   }
 
-  function flapBird(){ if(state==='ready') state='play'; if(state==='play') bird.vy = flapImpulse; }
+  function flapBird(){
+    if(state==='ready') state='play';
+    if(state==='play') bird.vy = flapImpulse;
+  }
 
-  // Input: tap/click only (per user preference)
   canvas.addEventListener('pointerdown', flapBird, {passive:true});
 
-  // External links
   ctaBtn.onclick = () => window.open(PROMO_BASE, '_blank');
   promo.onclick = () => window.open(PROMO_BASE, '_blank');
   shareBtn.onclick = () => {
-    const quips = [
-      `I retired a bird before my portfolio. ${PROMO_BASE} #401JK`,
-      `Just scored ${score} in Retirement Bird. Financial advice: flap early, sell never. ${PROMO_BASE} #401JK`,
-      `My pension is a meme and my bird can fly. Score ${score}. ${PROMO_BASE} #401JK`
-    ];
-    const text = quips[Math.floor(Math.random()*quips.length)];
-    const tweet = `https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}&url=${encodeURIComponent(PROMO_BASE)}`;
-    const telegram = `https://t.me/share/url?url=${encodeURIComponent(PROMO_BASE)}&text=${encodeURIComponent(text)}`;
+    const shareScore = state === 'over'
+      ? lastRoundScore
+      : (score > 0 ? score : best);
+    const shareStats = { score: shareScore, best, games };
+    const links = buildShareUrls(shareStats);
     const xFirst = /iphone|android|mobile/i.test(navigator.userAgent);
-    window.open(xFirst ? tweet : telegram, '_blank');
+    window.open(xFirst ? links.x : links.tg, '_blank');
   };
 
   function addPipe(){
-    const top = Math.random() * (CSSH * 0.45) + CSSH * 0.15; // playable band
-    const gap = Math.max(pipeGap*0.85, pipeGap - Math.max(0, score)*3); // gentle ramp
+    const top = Math.random() * (CSSH * 0.45) + CSSH * 0.15;
+    const gap = Math.max(pipeGap*0.85, pipeGap - Math.max(0, score)*3);
     pipes.push({ x: canvas.clientWidth, y: top, gap, scored: false });
   }
 
   function update(dt){
     if(state !== 'play') return;
 
-    bird.vy += gravity * dt;            // accelerate
-    bird.vy += -DRAG * bird.vy * dt;    // dampen bounce
-    if(bird.vy < -CSSH) bird.vy = -CSSH; // clamp upward
-    bird.y  += bird.vy * dt;            // integrate
+    bird.vy += gravity * dt;
+    bird.vy += -DRAG * bird.vy * dt;
+    if(bird.vy < -CSSH) bird.vy = -CSSH;
+    bird.y  += bird.vy * dt;
 
     if(bird.y - bird.r < 0 || bird.y + bird.r > CSSH) return gameover();
 
@@ -195,7 +224,11 @@
     pipes = pipes.filter(p => p.x + pipeW > 0);
 
     for(const p of pipes){
-      if(!p.scored && p.x + pipeW < bird.x){ score++; p.scored = true; }
+      if(!p.scored && p.x + pipeW < bird.x){
+        score++;
+        p.scored = true;
+        updateHud();
+      }
       const inX = bird.x + bird.r > p.x && bird.x - bird.r < p.x + pipeW;
       const hitTop = bird.y - bird.r < p.y;
       const hitBottom = bird.y + bird.r > p.y + p.gap;
@@ -204,19 +237,57 @@
   }
 
   function gameover(){
+    if(state === 'over') return;
     state = 'over';
-    best = Math.max(best, score); localStorage.setItem('best401', best);
-    overScore.textContent = String(score); overBest.textContent = String(best);
-    const quips = [
-      `I retired a bird before my portfolio. #401JK`,
-      `Just scored ${score} in Retirement Bird. Financial advice: flap early, sell never. #401JK`,
-      `My pension is a meme and my bird can fly. Score ${score}. #401JK`
-    ];
-    const text = quips[Math.floor(Math.random()*quips.length)];
-    xShare.href = `https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}&url=${encodeURIComponent(PROMO_BASE)}`;
-    tgShare.href = `https://t.me/share/url?url=${encodeURIComponent(PROMO_BASE)}&text=${encodeURIComponent(text)}`;
-    overCta.href = PROMO_BASE;
+    lastRoundScore = score;
+    games = sanitizeStat(games, 0) + 1;
+    if(score > best) best = score;
+    persistStatsLocal({ best, games });
+    updateHud();
+    refreshOverlayStats();
+    applyShareLinks({ score: lastRoundScore, best, games });
+    if(overCta) overCta.href = PROMO_BASE;
+    showOverlay();
+    statsBridge.push({ score: lastRoundScore, best, games }).then(remote => {
+      if(!remote) return;
+      let changed = false;
+      if(remote.best > best){ best = remote.best; changed = true; }
+      if(remote.games > games){ games = remote.games; changed = true; }
+      if(changed){
+        persistStatsLocal({ best, games });
+        updateHud();
+        if(state === 'over') refreshOverlayStats();
+        applyShareLinks({ score: lastRoundScore, best, games });
+      }
+    });
+  }
+
+  function updateHud(){
+    scoreEl.textContent = String(score);
+    bestEl.textContent = String(best);
+    if(gamesEl) gamesEl.textContent = String(games);
+  }
+
+  function refreshOverlayStats(){
+    overScore.textContent = String(lastRoundScore);
+    overBest.textContent = String(best);
+    overGames.textContent = String(games);
+  }
+
+  function hideOverlay(){
+    over.style.display = 'none';
+    over.setAttribute('aria-hidden','true');
+  }
+
+  function showOverlay(){
     over.style.display = 'grid';
+    over.setAttribute('aria-hidden','false');
+  }
+
+  function applyShareLinks(stats){
+    const links = buildShareUrls(stats);
+    xShare.href = links.x;
+    tgShare.href = links.tg;
   }
 
   function draw(){
@@ -246,10 +317,8 @@
       ctx.translate(p.x + pipeW/2, p.y/2); ctx.rotate(-Math.PI/2); ctx.fillText('FEES', 0, 0); ctx.restore();
     }
 
-    ctx.fillStyle = '#ffd166'; // use hex, canvas can't resolve CSS var in JS
+    ctx.fillStyle = '#ffd166';
     ctx.beginPath(); ctx.arc(bird.x, bird.y, bird.r, 0, Math.PI*2); ctx.fill();
-
-    scoreEl.textContent = String(score); bestEl.textContent = String(best);
 
     if(imgLogo && imgLogo.complete && imgLogo.naturalWidth && w>360){
       const lw = Math.min(140, Math.floor(w*0.35));
@@ -272,12 +341,8 @@
 
   retryBtn.addEventListener('click', () => { reset(); });
 
-  // Init
   fit(); reset(); requestAnimationFrame(loop);
 
-  // -------------------------
-  // Runtime tests (console)
-  // -------------------------
   (function runTests(){
     try{
       fit(); console.assert(CSSW>0 && CSSH>0, 'fit -> CSS dims > 0');
@@ -286,11 +351,214 @@
       console.assert(typeof pipes[0].gap==='number' && pipes[0].gap>0,'pipe has gap');
       const absFlap = Math.abs(flapImpulse); console.assert(absFlap < CSSH*0.8 && absFlap > CSSH*0.15, 'flapImpulse sane');
       const y0 = bird.y; flapBird(); update(0.2); const dy = Math.abs(bird.y - y0); console.assert(dy < CSSH*0.25, 'rise < 25% height over 200ms');
-      score=3; gameover(); console.assert(xShare.href.includes('twitter.com/intent'),'xShare link built'); console.assert(tgShare.href.includes('t.me/share/url'),'tgShare link built');
-      reset(); console.assert(getComputedStyle(over).display==='none','overlay hidden after reset');
+      const savedPush = statsBridge.push;
+      const savedBest = best; const savedGames = games;
+      try{
+        statsBridge.push = () => Promise.resolve(null);
+        score=3; gameover();
+        console.assert(xShare.href.includes('twitter.com/intent'),'xShare link built');
+        console.assert(tgShare.href.includes('t.me/share/url'),'tgShare link built');
+      }finally{
+        best = savedBest; games = savedGames; persistStatsLocal({ best, games });
+        statsBridge.push = savedPush; reset();
+      }
+      console.assert(getComputedStyle(over).display==='none','overlay hidden after reset');
       console.log('%cSelf-tests passed','color:#ffd166');
     }catch(e){ console.error('self-tests failed', e); }
   })();
+
+  function initStorage(){
+    try{
+      const ls = window.localStorage;
+      const probe = '__rb_probe__';
+      ls.setItem(probe, probe);
+      ls.removeItem(probe);
+      return ls;
+    }catch(err){
+      console.warn('localStorage unavailable, stats will be temporary.', err);
+      return null;
+    }
+  }
+
+  function readStoredStats(){
+    if(!storage) return { best:0, games:0 };
+    try{
+      const raw = storage.getItem(STORAGE_KEY);
+      if(raw){
+        const parsed = JSON.parse(raw);
+        const best = sanitizeStat(parsed.best, 0);
+        const games = sanitizeStat(parsed.games, 0);
+        return { best, games };
+      }
+    }catch(err){
+      console.warn('Unable to parse stored stats.', err);
+    }
+    try{
+      const legacy = storage.getItem(LEGACY_KEY);
+      const best = sanitizeStat(legacy, 0);
+      return { best, games:0 };
+    }catch(err){
+      if(err) console.warn('Unable to read legacy best score.', err);
+    }
+    return { best:0, games:0 };
+  }
+
+  function persistStatsLocal(stats){
+    if(!storage) return;
+    const payload = {
+      best: sanitizeStat(stats.best, 0),
+      games: sanitizeStat(stats.games, 0)
+    };
+    try{
+      storage.setItem(STORAGE_KEY, JSON.stringify(payload));
+      storage.setItem(LEGACY_KEY, String(payload.best));
+    }catch(err){
+      console.warn('Unable to persist stats locally.', err);
+    }
+  }
+
+  function createStatsBridge(config){
+    const statsUrl = config.statsUrl;
+    const loginCheck = () => {
+      if(typeof config.isLoggedIn === 'function'){
+        try{ return !!config.isLoggedIn(); }
+        catch(err){ console.warn('isLoggedIn() threw, assuming logged out.', err); return false; }
+      }
+      if(typeof config.loggedIn === 'boolean') return config.loggedIn;
+      if(typeof config.loggedIn === 'string'){
+        if(config.loggedIn === 'true') return true;
+        if(config.loggedIn === 'false') return false;
+      }
+      if(config.authToken) return true;
+      return false;
+    };
+
+    function buildHeaders(includeJson){
+      const headers = { Accept: 'application/json' };
+      if(config.extraHeaders) Object.assign(headers, config.extraHeaders);
+      if(config.authToken) headers.Authorization = config.authToken;
+      if(config.csrfToken) headers['X-CSRF-Token'] = config.csrfToken;
+      if(includeJson) headers['Content-Type'] = 'application/json';
+      return headers;
+    }
+
+    async function load(){
+      if(!statsUrl || !loginCheck()) return null;
+      try{
+        const resp = await fetch(statsUrl, { method: 'GET', credentials: 'include', headers: buildHeaders(false) });
+        if(!resp.ok) throw new Error(`stats GET failed with ${resp.status}`);
+        const data = await resp.json();
+        return {
+          best: sanitizeStat(data.bestScore ?? data.best ?? data.highScore, best),
+          games: sanitizeStat(data.gamesPlayed ?? data.games ?? data.playCount, games)
+        };
+      }catch(err){
+        console.warn('Unable to load remote stats.', err);
+        return null;
+      }
+    }
+
+    async function push(payload){
+      if(!statsUrl || !loginCheck()) return null;
+      try{
+        const resp = await fetch(statsUrl, {
+          method: 'POST',
+          credentials: 'include',
+          headers: buildHeaders(true),
+          body: JSON.stringify({
+            score: payload.score,
+            bestScore: payload.best,
+            gamesPlayed: payload.games,
+            userId: config.userId || undefined
+          })
+        });
+        if(resp.status === 204) return null;
+        if(!resp.ok) throw new Error(`stats POST failed with ${resp.status}`);
+        const data = await resp.json().catch(() => null);
+        if(!data) return null;
+        return {
+          best: sanitizeStat(data.bestScore ?? data.best ?? data.highScore ?? payload.best, payload.best),
+          games: sanitizeStat(data.gamesPlayed ?? data.games ?? data.playCount ?? payload.games, payload.games)
+        };
+      }catch(err){
+        console.warn('Unable to persist stats to backend.', err);
+        return null;
+      }
+    }
+
+    return { load, push };
+  }
+
+  function buildShareUrls(stats){
+    const safeStats = {
+      score: sanitizeStat(stats.score, 0),
+      best: sanitizeStat(stats.best, 0),
+      games: sanitizeStat(stats.games, 0)
+    };
+    const text = pickQuip(safeStats);
+    const encodedUrl = encodeURIComponent(PROMO_BASE);
+    const encodedText = encodeURIComponent(text);
+    return {
+      text,
+      x: `https://twitter.com/intent/tweet?text=${encodedText}&url=${encodedUrl}`,
+      tg: `https://t.me/share/url?url=${encodedUrl}&text=${encodedText}`
+    };
+  }
+
+  function pickQuip(stats){
+    const quips = [
+      `I retired a bird before my portfolio. Score ${stats.score}. #401JK`,
+      `Just scored ${stats.score} in Retirement Bird. Financial advice: flap early, sell never. #401JK`,
+      `My pension is a meme and my bird can fly. Score ${stats.score}. #401JK`
+    ];
+    if(stats.games > 1){
+      quips.push(`Run ${stats.games} and counting. Best ${stats.best}, latest ${stats.score}. #401JK`);
+    }else if(stats.best > stats.score){
+      quips.push(`Best ${stats.best}, but the latest round ended at ${stats.score}. Back to the grind! #401JK`);
+    }
+    return quips[Math.floor(Math.random()*quips.length)];
+  }
+
+  function sanitizeStat(value, fallback){
+    const num = Number(value);
+    if(!Number.isFinite(num) || num < 0) return fallback ?? 0;
+    return Math.floor(num);
+  }
+
+  function getRuntimeConfig(){
+    const dataset = document.body?.dataset ?? {};
+    const globalCfg = (typeof window !== 'undefined' && window.RB_CONFIG && typeof window.RB_CONFIG === 'object') ? window.RB_CONFIG : {};
+    const coalesce = (...values) => {
+      for(const value of values){
+        if(value === undefined || value === null) continue;
+        if(typeof value === 'string' && value.trim() === '') continue;
+        return value;
+      }
+      return undefined;
+    };
+    const parseBool = (value) => {
+      if(typeof value === 'boolean') return value;
+      if(typeof value === 'string'){
+        if(value === 'true') return true;
+        if(value === 'false') return false;
+      }
+      return undefined;
+    };
+    const extraHeaders = typeof globalCfg.extraHeaders === 'object' && globalCfg.extraHeaders
+      ? globalCfg.extraHeaders
+      : null;
+
+    return {
+      promoUrl: coalesce(globalCfg.promoUrl, dataset.rbPromoUrl, 'https://dexscreener.com/solana/Cz7LGKdZPpAxonXx23ZYPW3RtDQvjcf17ZDCZEzFpump'),
+      statsUrl: coalesce(globalCfg.statsUrl, dataset.rbStatsUrl),
+      authToken: coalesce(globalCfg.authToken, dataset.rbAuthToken),
+      csrfToken: coalesce(globalCfg.csrfToken, dataset.rbCsrfToken, dataset.rbCsrf),
+      userId: coalesce(globalCfg.userId, dataset.rbUserId),
+      extraHeaders,
+      loggedIn: coalesce(parseBool(globalCfg.loggedIn), parseBool(dataset.rbAuthenticated)),
+      isLoggedIn: typeof globalCfg.isLoggedIn === 'function' ? globalCfg.isLoggedIn : null
+    };
+  }
 })();
 </script>
 </body>
